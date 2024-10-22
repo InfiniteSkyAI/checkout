@@ -43,7 +43,7 @@ runs:
 
     - name: Ensure mirror is up-to-date
       shell: bash
-      run: ssh ${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }} /home/git/refresh_hermes.sh #"cd ${{ inputs.git_mirror_repo_path }} && git fetch --all"
+      run: ssh ${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }} /home/git/refresh_hermes.sh #"cd ${{ inputs.git_mirror_repo_path }} && git fetch --all"
 
     - name: Checkout repository from EC2 mirror
       shell: bash
@@ -56,24 +56,24 @@ runs:
           whoami
           git remote -v
           git remote remove origin
-          git remote add origin ssh://${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}
+          git remote add origin ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}
           git remote -v
-          if !(git fetch ssh://${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}); then
+          if !(git fetch ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}); then
             cd ..
             echo "fetch failed; reverting to clone"
             rm -rf $GITHUB_WORKSPACE
             mkdir -p $GITHUB_WORKSPACE
             cd $GITHUB_WORKSPACE
-            git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
+            git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
           fi
         else
           echo "No existing git repository found; cloning"
           mkdir -p $GITHUB_WORKSPACE
           cd $GITHUB_WORKSPACE
-          git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
+          git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
         fi
         cd $GITHUB_WORKSPACE
-        # git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
+        # git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
         # Checkout appropriate ref
         echo "Checking out appropriate ref"
         if [[ "${{ github.event_name }}" == "pull_request" ]]; then
