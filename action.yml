@@ -1,35 +1,85 @@
 name: 'Hello World'
 description: 'Greet someone'
 inputs:
-  who-to-greet:  # id of input
-    description: 'Who to greet'
+  git_mirror_hostname:
+    description: 'Hostname of the git server mirror'
     required: true
-    default: 'World'
-outputs:
-  random-number:
-    description: "Random number"
-    value: ${{ steps.random-number-generator.outputs.random-number }}
+  private_ssh_key:
+    description: 'SSH private key for the git server mirror'
+    required: true
+  git_mirror_user:
+    description: 'User for the git server mirror'
+    required: true
+  git_mirror_repo_path:
+    description: 'Path to the git repository on the git server mirror'
+    required: true
+# outputs:
+#   random-number:
+#     description: "Random number"
+#     value: ${{ steps.random-number-generator.outputs.random-number }}
 runs:
   using: "composite"
   steps:
-    - name: Set Greeting
-      run: echo "Hello $INPUT_WHO_TO_GREET."
+    - name: Get Hermes
       shell: bash
-      env:
-        INPUT_WHO_TO_GREET: ${{ inputs.who-to-greet }}
+      run: |
+        REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+        AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+        echo "AWS_REGION=${REGION}" >> $GITHUB_ENV
+        echo "AWS_AZ=${AZ}" >> $GITHUB_ENV
+        GIT_MIRROR_HOSTNAME_WITH_AZ=$(echo ${{ inputs.git_mirror_hostname }} | sed "s/\./-${AZ}./")
+        echo "GIT_MIRROR_HOSTNAME_WITH_AZ=${GIT_MIRROR_HOSTNAME_WITH_AZ}" >> $GITHUB_ENV
 
-    - name: Random Number Generator
-      id: random-number-generator
-      run: echo "random-number=$(echo $RANDOM)" >> $GITHUB_OUTPUT
+    - name: Install SSH key
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ inputs.private_ssh_key }}
+
+    - name: Add mirror host to known hosts
       shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -H $GIT_MIRROR_HOSTNAME_WITH_AZ >> ~/.ssh/known_hosts
 
-    - name: Set GitHub Path
-      run: echo "$GITHUB_ACTION_PATH" >> $GITHUB_PATH
+    - name: Ensure mirror is up-to-date
       shell: bash
-      env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: ssh ${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ /home/git/refresh_hermes.sh #"cd ${{ inputs.git_mirror_repo_path }} && git fetch --all"
 
-    - name: Run goodbye.sh
-      run: goodbye.sh
+    - name: Checkout repository from EC2 mirror
       shell: bash
-
+      run: |
+        if [ -d $GITHUB_WORKSPACE/.git ]; then
+          # we may be able to do a git fetch -all here instead of deleting the directory
+          echo "Existing git repository found; fetching changes"
+          cd $GITHUB_WORKSPACE
+          echo $GITHUB_WORKSPACE
+          whoami
+          git remote -v
+          git remote remove origin
+          git remote add origin ssh://${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ${{ inputs.git_mirror_repo_path }}
+          git remote -v
+          if !(git fetch ssh://${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ${{ inputs.git_mirror_repo_path }}); then
+            cd ..
+            echo "fetch failed; reverting to clone"
+            rm -rf $GITHUB_WORKSPACE
+            mkdir -p $GITHUB_WORKSPACE
+            cd $GITHUB_WORKSPACE
+            git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ${{ inputs.git_mirror_repo_path }} .
+          fi
+        else
+          echo "No existing git repository found; cloning"
+          mkdir -p $GITHUB_WORKSPACE
+          cd $GITHUB_WORKSPACE
+          git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ${{ inputs.git_mirror_repo_path }} .
+        fi
+        cd $GITHUB_WORKSPACE
+        # git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_user_mirror }}@$GIT_MIRROR_HOSTNAME_WITH_AZ${{ inputs.git_mirror_repo_path }} .
+        # Checkout appropriate ref
+        echo "Checking out appropriate ref"
+        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git checkout ${{ github.event.pull_request.head.sha }}
+        else
+          git fetch origin ${{ github.sha }}
+          git checkout ${{ github.sha }}
+        fi
