@@ -76,7 +76,7 @@ runs:
         # git clone --recurse-submodules --depth 1 ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }} .
         # Checkout appropriate ref
         echo "Checking out appropriate ref"
-        git stash
+        git stash || true
         if [[ "${{ github.event_name }}" == "pull_request" ]]; then
           git fetch origin ${{ github.event.pull_request.head.sha }}
           git checkout ${{ github.event.pull_request.head.sha }}
