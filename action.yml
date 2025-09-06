@@ -45,68 +45,68 @@ runs:
       shell: bash
       run: ssh ${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }} /home/git/refresh_hermes.sh #"cd ${{ inputs.git_mirror_repo_path }} && git fetch --all"
 
-- name: Checkout repository from EC2 mirror
-  shell: bash
-  run: |
-    set -e
-
-    MIRROR_URL="ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}"
-
-    # Prepare workspace
-    if [ -d "$GITHUB_WORKSPACE/.git" ]; then
-      echo "Existing git repository found; fetching changes"
-      cd "$GITHUB_WORKSPACE"
-      git remote -v
-      git remote remove origin
-      git remote add origin "$MIRROR_URL"
-      git remote -v
-      if ! git fetch "$MIRROR_URL"; then
-        cd ..
-        echo "fetch failed; reverting to clone"
-        rm -rf "$GITHUB_WORKSPACE"
-        mkdir -p "$GITHUB_WORKSPACE"
+    - name: Checkout repository from EC2 mirror
+      shell: bash
+      run: |
+        set -e
+    
+        MIRROR_URL="ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}"
+    
+        # Prepare workspace
+        if [ -d "$GITHUB_WORKSPACE/.git" ]; then
+          echo "Existing git repository found; fetching changes"
+          cd "$GITHUB_WORKSPACE"
+          git remote -v
+          git remote remove origin
+          git remote add origin "$MIRROR_URL"
+          git remote -v
+          if ! git fetch "$MIRROR_URL"; then
+            cd ..
+            echo "fetch failed; reverting to clone"
+            rm -rf "$GITHUB_WORKSPACE"
+            mkdir -p "$GITHUB_WORKSPACE"
+            cd "$GITHUB_WORKSPACE"
+            git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
+          fi
+        else
+          echo "No existing git repository found; cloning"
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
+        fi
+    
         cd "$GITHUB_WORKSPACE"
-        git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
-      fi
-    else
-      echo "No existing git repository found; cloning"
-      mkdir -p "$GITHUB_WORKSPACE"
-      cd "$GITHUB_WORKSPACE"
-      git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
-    fi
-
-    cd "$GITHUB_WORKSPACE"
-
-    # Determine target commit
-    if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-      TARGET_SHA="${{ github.event.pull_request.head.sha }}"
-    else
-      TARGET_SHA="${{ github.sha }}"
-    fi
-
-    # Function to check if commit exists in remote
-    commit_exists() {
-      git ls-remote origin "$1" | grep -q "$1"
-    }
-
-    MAX_RETRIES=3
-    RETRY_DELAY=10
-    ATTEMPT=0
-
-    while ! commit_exists "$TARGET_SHA" && [ $ATTEMPT -lt $MAX_RETRIES ]; do
-      echo "Commit $TARGET_SHA not found in mirror. Attempting to refresh mirror (try $((ATTEMPT+1))/$MAX_RETRIES)..."
-      ssh "${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}" /home/git/refresh_hermes.sh
-      sleep $RETRY_DELAY
-      ATTEMPT=$((ATTEMPT+1))
-      git fetch origin
-    done
-
-    if ! commit_exists "$TARGET_SHA"; then
-      echo "ERROR: Commit $TARGET_SHA is still missing in mirror after $MAX_RETRIES attempts."
-      exit 1
-    fi
-
-    echo "Commit found! Proceeding with checkout."
-    git stash || true
-    git fetch origin "$TARGET_SHA"
-    git checkout "$TARGET_SHA"
+    
+        # Determine target commit
+        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          TARGET_SHA="${{ github.event.pull_request.head.sha }}"
+        else
+          TARGET_SHA="${{ github.sha }}"
+        fi
+    
+        # Function to check if commit exists in remote
+        commit_exists() {
+          git ls-remote origin "$1" | grep -q "$1"
+        }
+    
+        MAX_RETRIES=3
+        RETRY_DELAY=10
+        ATTEMPT=0
+    
+        while ! commit_exists "$TARGET_SHA" && [ $ATTEMPT -lt $MAX_RETRIES ]; do
+          echo "Commit $TARGET_SHA not found in mirror. Attempting to refresh mirror (try $((ATTEMPT+1))/$MAX_RETRIES)..."
+          ssh "${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}" /home/git/refresh_hermes.sh
+          sleep $RETRY_DELAY
+          ATTEMPT=$((ATTEMPT+1))
+          git fetch origin
+        done
+    
+        if ! commit_exists "$TARGET_SHA"; then
+          echo "ERROR: Commit $TARGET_SHA is still missing in mirror after $MAX_RETRIES attempts."
+          exit 1
+        fi
+    
+        echo "Commit found! Proceeding with checkout."
+        git stash || true
+        git fetch origin "$TARGET_SHA"
+        git checkout "$TARGET_SHA"
