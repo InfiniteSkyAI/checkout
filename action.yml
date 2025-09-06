@@ -31,7 +31,7 @@ runs:
         echo "GIT_MIRROR_HOSTNAME_WITH_AZ=${GIT_MIRROR_HOSTNAME_WITH_AZ}" >> $GITHUB_ENV
 
     - name: Install SSH key
-      uses: webfactory/ssh-agent@v0.9.0
+      uses: webfactory/ssh-agent@v0.9.1
       with:
         ssh-private-key: ${{ inputs.private_ssh_key }}
 
