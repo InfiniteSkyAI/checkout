@@ -86,7 +86,8 @@ runs:
     
         # Function to check if commit exists in remote
         commit_exists() {
-          git ls-remote origin "$1" | grep -q "$1"
+          git fetch --quiet origin "$1" && return 0
+          return 1
         }
     
         MAX_RETRIES=3
