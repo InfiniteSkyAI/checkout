@@ -78,11 +78,13 @@ runs:
         cd "$GITHUB_WORKSPACE"
     
         # Determine target commit
-        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          TARGET_SHA="${{ github.event.pull_request.head.sha }}"
+        if [[ "${{ github.event_name }}" == "pull_request" || \
+              "${{ github.event_name }}" == "pull_request_target" ]]; then
+            TARGET_SHA="${{ github.event.pull_request.head.sha }}"
         else
-          TARGET_SHA="${{ github.sha }}"
+            TARGET_SHA="${{ github.sha }}"
         fi
+
     
         # Function to check if commit exists in remote
         commit_exists() {
