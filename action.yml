@@ -1,5 +1,5 @@
-name: 'Hello World'
-description: 'Greet someone'
+name: 'Checkout from AWS Mirror'
+description: 'Checkout repository from internal AWS git mirror with support for retries and fetch-depth'
 inputs:
   git_mirror_hostname:
     description: 'Hostname of the git server mirror'
@@ -13,10 +13,11 @@ inputs:
   git_mirror_repo_path:
     description: 'Path to the git repository on the git server mirror'
     required: true
-# outputs:
-#   random-number:
-#     description: "Random number"
-#     value: ${{ steps.random-number-generator.outputs.random-number }}
+  fetch-depth:
+    description: 'Number of commits to fetch. 0 indicates all history for all branches and tags.'
+    required: false
+    default: '1'
+
 runs:
   using: "composite"
   steps:
@@ -43,40 +44,58 @@ runs:
 
     - name: Ensure mirror is up-to-date
       shell: bash
-      run: ssh ${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }} /home/git/refresh_hermes.sh #"cd ${{ inputs.git_mirror_repo_path }} && git fetch --all"
+      run: ssh ${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }} /home/git/refresh_hermes.sh
 
     - name: Checkout repository from EC2 mirror
       shell: bash
       run: |
         set -e
-    
+        
         MIRROR_URL="ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}"
-    
+        FETCH_DEPTH="${{ inputs.fetch-depth }}"
+        
+        # Configure Clone Arguments based on depth
+        if [ "$FETCH_DEPTH" -eq "0" ]; then
+          CLONE_ARGS="--recurse-submodules"
+        else
+          CLONE_ARGS="--recurse-submodules --depth $FETCH_DEPTH"
+        fi
+
         # Prepare workspace
         if [ -d "$GITHUB_WORKSPACE/.git" ]; then
           echo "Existing git repository found; fetching changes"
           cd "$GITHUB_WORKSPACE"
-          git remote -v
-          git remote remove origin
+          git remote remove origin 2>/dev/null || true
           git remote add origin "$MIRROR_URL"
-          git remote -v
-          if ! git fetch "$MIRROR_URL"; then
-            cd ..
-            echo "fetch failed; reverting to clone"
-            rm -rf "$GITHUB_WORKSPACE"
-            mkdir -p "$GITHUB_WORKSPACE"
-            cd "$GITHUB_WORKSPACE"
-            git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
+          
+          # If we need full history (0) but repo is shallow, we must unshallow or full fetch
+          if [ "$FETCH_DEPTH" -eq "0" ]; then
+             if [ -f .git/shallow ]; then
+                echo "Repo is shallow, but full history requested. Unshallowing..."
+                git fetch --unshallow origin || git fetch --all
+             else
+                git fetch origin
+             fi
+          else
+             # Standard shallow fetch attempt
+             if ! git fetch "$MIRROR_URL"; then
+               echo "Fetch failed; reverting to clean clone"
+               cd ..
+               rm -rf "$GITHUB_WORKSPACE"
+               mkdir -p "$GITHUB_WORKSPACE"
+               cd "$GITHUB_WORKSPACE"
+               git clone $CLONE_ARGS "$MIRROR_URL" .
+             fi
           fi
         else
-          echo "No existing git repository found; cloning"
+          echo "No existing git repository found; cloning with args: $CLONE_ARGS"
           mkdir -p "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          git clone --recurse-submodules --depth 1 "$MIRROR_URL" .
+          git clone $CLONE_ARGS "$MIRROR_URL" .
         fi
-    
+        
         cd "$GITHUB_WORKSPACE"
-    
+        
         # Determine target commit
         if [[ "${{ github.event_name }}" == "pull_request" || \
               "${{ github.event_name }}" == "pull_request_target" ]]; then
@@ -85,31 +104,42 @@ runs:
             TARGET_SHA="${{ github.sha }}"
         fi
 
-    
         # Function to check if commit exists in remote
         commit_exists() {
           git fetch --quiet origin "$1" && return 0
           return 1
         }
-    
+        
         MAX_RETRIES=3
         RETRY_DELAY=10
         ATTEMPT=0
-    
+        
+        # Retry logic to wait for replication/mirror update
         while ! commit_exists "$TARGET_SHA" && [ $ATTEMPT -lt $MAX_RETRIES ]; do
           echo "Commit $TARGET_SHA not found in mirror. Attempting to refresh mirror (try $((ATTEMPT+1))/$MAX_RETRIES)..."
           ssh "${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}" /home/git/refresh_hermes.sh
           sleep $RETRY_DELAY
           ATTEMPT=$((ATTEMPT+1))
+          # If retrying, we just do a standard fetch to update refs
           git fetch origin
         done
-    
+        
         if ! commit_exists "$TARGET_SHA"; then
           echo "ERROR: Commit $TARGET_SHA is still missing in mirror after $MAX_RETRIES attempts."
           exit 1
         fi
-    
+        
         echo "Commit found! Proceeding with checkout."
         git stash || true
-        git fetch origin "$TARGET_SHA"
-        git checkout "$TARGET_SHA"
+        
+        # Final Checkout Logic
+        if [ "$FETCH_DEPTH" -eq "0" ]; then
+            # If depth is 0, we need 'origin/main' and other branches to exist for git diff to work
+            echo "Fetching all refs for full history..."
+            git fetch origin
+            git checkout "$TARGET_SHA"
+        else
+            # Optimized fetch for specific commit only
+            git fetch origin "$TARGET_SHA"
+            git checkout "$TARGET_SHA"
+        fi
