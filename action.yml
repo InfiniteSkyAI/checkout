@@ -17,6 +17,10 @@ inputs:
     description: 'Number of commits to fetch. 0 indicates all history for all branches and tags.'
     required: false
     default: '1'
+  submodules:
+    description: 'Whether to checkout submodules: true or false'
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
@@ -53,12 +57,19 @@ runs:
         
         MIRROR_URL="ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}"
         FETCH_DEPTH="${{ inputs.fetch-depth }}"
+        SUBMODULES="${{ inputs.submodules }}"
         
-        # Configure Clone Arguments based on depth
+        # Determine submodule flag
+        RECURSE_FLAG=""
+        if [ "$SUBMODULES" = "true" ]; then
+          RECURSE_FLAG="--recurse-submodules"
+        fi
+
+        # Configure Clone Arguments based on depth and submodules
         if [ "$FETCH_DEPTH" -eq "0" ]; then
-          CLONE_ARGS="--recurse-submodules"
+          CLONE_ARGS="$RECURSE_FLAG"
         else
-          CLONE_ARGS="--recurse-submodules --depth $FETCH_DEPTH"
+          CLONE_ARGS="$RECURSE_FLAG --depth $FETCH_DEPTH"
         fi
 
         # Prepare workspace
@@ -68,7 +79,6 @@ runs:
           git remote remove origin 2>/dev/null || true
           git remote add origin "$MIRROR_URL"
           
-          # If we need full history (0) but repo is shallow, we must unshallow or full fetch
           if [ "$FETCH_DEPTH" -eq "0" ]; then
              if [ -f .git/shallow ]; then
                 echo "Repo is shallow, but full history requested. Unshallowing..."
@@ -77,7 +87,6 @@ runs:
                 git fetch origin
              fi
           else
-             # Standard shallow fetch attempt
              if ! git fetch "$MIRROR_URL"; then
                echo "Fetch failed; reverting to clean clone"
                cd ..
@@ -114,13 +123,11 @@ runs:
         RETRY_DELAY=10
         ATTEMPT=0
         
-        # Retry logic to wait for replication/mirror update
         while ! commit_exists "$TARGET_SHA" && [ $ATTEMPT -lt $MAX_RETRIES ]; do
           echo "Commit $TARGET_SHA not found in mirror. Attempting to refresh mirror (try $((ATTEMPT+1))/$MAX_RETRIES)..."
           ssh "${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}" /home/git/refresh_hermes.sh
           sleep $RETRY_DELAY
           ATTEMPT=$((ATTEMPT+1))
-          # If retrying, we just do a standard fetch to update refs
           git fetch origin
         done
         
@@ -134,12 +141,15 @@ runs:
         
         # Final Checkout Logic
         if [ "$FETCH_DEPTH" -eq "0" ]; then
-            # If depth is 0, we need 'origin/main' and other branches to exist for git diff to work
-            echo "Fetching all refs for full history..."
             git fetch origin
             git checkout "$TARGET_SHA"
         else
-            # Optimized fetch for specific commit only
             git fetch origin "$TARGET_SHA"
             git checkout "$TARGET_SHA"
+        fi
+
+        # Update submodules if enabled after checkout
+        if [ "$SUBMODULES" = "true" ]; then
+          echo "Updating submodules..."
+          git submodule update --init --recursive
         fi
