@@ -55,24 +55,43 @@ runs:
       run: |
         set -e
         
+        # 1. WORKSPACE SANITIZATION
+        if [ -d "$GITHUB_WORKSPACE/.git" ]; then
+          echo "Found existing workspace. Cleaning up stale locks and artifacts..."
+          # Remove index locks from main repo and all submodules
+          find "$GITHUB_WORKSPACE/.git" -name "index.lock" -delete 2>/dev/null || true
+          
+          cd "$GITHUB_WORKSPACE"
+          # Check if the git repo is actually valid
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Resetting repository to clean state..."
+            git reset --hard HEAD || true
+            git clean -ffdx || true
+          else
+            echo "Repository state is corrupted. Wiping and starting fresh..."
+            cd ..
+            rm -rf "$GITHUB_WORKSPACE"
+            mkdir -p "$GITHUB_WORKSPACE"
+          fi
+        fi
+
+        # 2. CONFIGURATION
         MIRROR_URL="ssh://${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}${{ inputs.git_mirror_repo_path }}"
         FETCH_DEPTH="${{ inputs.fetch-depth }}"
         SUBMODULES="${{ inputs.submodules }}"
         
-        # Determine submodule flag
         RECURSE_FLAG=""
         if [ "$SUBMODULES" = "true" ]; then
           RECURSE_FLAG="--recurse-submodules"
         fi
 
-        # Configure Clone Arguments based on depth and submodules
         if [ "$FETCH_DEPTH" -eq "0" ]; then
           CLONE_ARGS="$RECURSE_FLAG"
         else
           CLONE_ARGS="$RECURSE_FLAG --depth $FETCH_DEPTH"
         fi
 
-        # Prepare workspace
+        # 3. PREPARE WORKSPACE / CLONE
         if [ -d "$GITHUB_WORKSPACE/.git" ]; then
           echo "Existing git repository found; fetching changes"
           cd "$GITHUB_WORKSPACE"
@@ -80,12 +99,7 @@ runs:
           git remote add origin "$MIRROR_URL"
           
           if [ "$FETCH_DEPTH" -eq "0" ]; then
-             if [ -f .git/shallow ]; then
-                echo "Repo is shallow, but full history requested. Unshallowing..."
-                git fetch --unshallow origin || git fetch --all
-             else
-                git fetch origin
-             fi
+             git fetch --unshallow origin 2>/dev/null || git fetch origin
           else
              if ! git fetch "$MIRROR_URL"; then
                echo "Fetch failed; reverting to clean clone"
@@ -105,7 +119,7 @@ runs:
         
         cd "$GITHUB_WORKSPACE"
         
-        # Determine target commit
+        # 4. TARGET SELECTION
         if [[ "${{ github.event_name }}" == "pull_request" || \
               "${{ github.event_name }}" == "pull_request_target" ]]; then
             TARGET_SHA="${{ github.event.pull_request.head.sha }}"
@@ -113,7 +127,7 @@ runs:
             TARGET_SHA="${{ github.sha }}"
         fi
 
-        # Function to check if commit exists in remote
+        # 5. RETRY LOGIC FOR MIRROR SYNC
         commit_exists() {
           git fetch --quiet origin "$1" && return 0
           return 1
@@ -124,7 +138,7 @@ runs:
         ATTEMPT=0
         
         while ! commit_exists "$TARGET_SHA" && [ $ATTEMPT -lt $MAX_RETRIES ]; do
-          echo "Commit $TARGET_SHA not found in mirror. Attempting to refresh mirror (try $((ATTEMPT+1))/$MAX_RETRIES)..."
+          echo "Commit $TARGET_SHA not found in mirror. Refreshing (try $((ATTEMPT+1))/$MAX_RETRIES)..."
           ssh "${{ inputs.git_mirror_user }}@${{ env.GIT_MIRROR_HOSTNAME_WITH_AZ }}" /home/git/refresh_hermes.sh
           sleep $RETRY_DELAY
           ATTEMPT=$((ATTEMPT+1))
@@ -132,23 +146,21 @@ runs:
         done
         
         if ! commit_exists "$TARGET_SHA"; then
-          echo "ERROR: Commit $TARGET_SHA is still missing in mirror after $MAX_RETRIES attempts."
+          echo "ERROR: Commit $TARGET_SHA is still missing after $MAX_RETRIES attempts."
           exit 1
         fi
         
+        # 6. FINAL CHECKOUT
         echo "Commit found! Proceeding with checkout."
-        git stash || true
-        
-        # Final Checkout Logic
         if [ "$FETCH_DEPTH" -eq "0" ]; then
-            git fetch origin
+            git fetch --tags origin # Fetch tags specifically for your v1.8.0/v1 logic
             git checkout "$TARGET_SHA"
         else
             git fetch origin "$TARGET_SHA"
             git checkout "$TARGET_SHA"
         fi
 
-        # Update submodules if enabled after checkout
+        # 7. SUBMODULE UPDATE
         if [ "$SUBMODULES" = "true" ]; then
           echo "Updating submodules..."
           git submodule update --init --recursive
